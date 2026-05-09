@@ -1,0 +1,12 @@
+# _shared/assets/ 에서 이 게임의 assets/ 로 복사할 파일 (deploy.sh 활용)
+# genesis-8-stories는 성경 2.0 1권 source page를 직접 assets/images/에 복사하므로 manifest 비움.
+# 이미지 출처: ~/c/00obsi13/4_References_Books/성경 2.0 1 창세기 욥기/source_pages/
+# 8장면 매핑:
+#   01_creation.jpg  ← page 020 (천지창조)
+#   02_adam.jpg      ← page 025 (아담)
+#   03_cain_abel.jpg ← page 030 (가인과 아벨)
+#   04_noah.jpg      ← page 039 (노아)
+#   05_abraham.jpg   ← page 061 (아브라함)
+#   06_isaac.jpg     ← page 093 (이삭)
+#   07_jacob.jpg     ← page 122 (야곱)
+#   08_joseph.jpg    ← page 140 (요셉)

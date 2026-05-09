@@ -1,0 +1,701 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>요셉 8장면 — 파이디온판 (구약1 17과)</title>
+
+  <!-- React 18 + Babel standalone -->
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <!-- Tailwind CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <!-- 드래그&드롭 (모바일 터치 포함) -->
+  <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
+
+  <!-- 게임별 설정 (이름/엔드포인트/시트탭) -->
+  <script src="./config.js"></script>
+  <!-- 공통 인프라 (deploy.sh가 _shared/에서 복사) -->
+  <script src="./tts.js"></script>      <!-- window.GameTTS -->
+  <script src="./sfx.js"></script>      <!-- window.GameSFX -->
+  <script src="./recorder.js"></script> <!-- window.GameRecorder -->
+
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { min-height: 100%; }
+    body { font-family: ui-sans-serif, system-ui, -apple-system, "Apple SD Gothic Neo", sans-serif; background: #f8fafc; }
+    @keyframes slideIn { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+    @keyframes pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.05); } }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel" data-presets="react">
+    const { useState, useEffect, useMemo, useRef } = React;
+    const { speak, speakQueue, toEnglish, toKorean } = window.GameTTS;
+    const sfx = window.GameSFX;
+
+    // ─────────────────────────────────────────
+    // 공통 훅/컴포넌트 (모든 게임에서 재사용)
+    // ─────────────────────────────────────────
+
+    // 화면 폭 < 640px 감지 (선택지 2열 → 1열 등에 사용)
+    function useIsMobile(breakpoint = 640) {
+      const [m, setM] = useState(() => (typeof window !== 'undefined' ? window.innerWidth < breakpoint : false));
+      useEffect(() => {
+        const r = () => setM(window.innerWidth < breakpoint);
+        window.addEventListener('resize', r);
+        return () => window.removeEventListener('resize', r);
+      }, [breakpoint]);
+      return m;
+    }
+
+    // 🔊 작은 스피커 아이콘 (텍스트 옆에 붙여 TTS 재생)
+    //   <SpeakIcon text="hello" lang="en-US" />
+    function SpeakIcon({ text, lang = 'en-US', size = 20, color = 'rgba(255,255,255,0.25)' }) {
+      return (
+        <span
+          role="button"
+          aria-label="듣기"
+          onClick={(e) => { e.stopPropagation(); speak(text, lang); }}
+          onMouseDown={(e) => e.preventDefault()}
+          style={{
+            display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+            width: size + 10, height: size + 10, borderRadius: '50%',
+            background: color, marginRight: 6, cursor: 'pointer',
+            fontSize: size * 0.85, userSelect: 'none',
+          }}
+        >
+          🔊
+        </span>
+      );
+    }
+
+    // 미디어 블록: mp3 / mp4 / YouTube 중 선택해서 문제 중간에 삽입
+    //   <MediaBlock media={{ type: 'audio'|'video'|'youtube', src: '...' }} />
+    function MediaBlock({ media }) {
+      if (!media) return null;
+      if (media.type === 'audio') return <audio src={media.src} controls className="w-full my-3" />;
+      if (media.type === 'video') return <video src={media.src} controls className="w-full rounded-lg my-3" />;
+      if (media.type === 'youtube') {
+        const id = media.src.includes('http')
+          ? (media.src.match(/(?:youtu\.be\/|v=)([\w-]{11})/) || [])[1]
+          : media.src;
+        return (
+          <div className="aspect-video my-3">
+            <iframe
+              className="w-full h-full rounded-lg"
+              src={`https://www.youtube.com/embed/${id}`}
+              title="media"
+              allow="accelerometer; autoplay; encrypted-media; gyroscope; picture-in-picture"
+              allowFullScreen
+            />
+          </div>
+        );
+      }
+      return null;
+    }
+
+    // 이름 입력 → 게임 → 기록 전송 래퍼
+    function GameShell({ children }) {
+      const [player, setPlayer] = useState('');
+      const [started, setStarted] = useState(false);
+      const startTimeRef = useRef(null);
+
+      const onStart = () => { sfx.click(); startTimeRef.current = Date.now(); setStarted(true); };
+
+      const submit = (payload) => {
+        const duration = startTimeRef.current ? Math.round((Date.now() - startTimeRef.current) / 1000) : null;
+        return window.GameRecorder.submit({ player, duration_sec: duration, ...payload });
+      };
+
+      if (!started) {
+        return (
+          <div style={{ maxWidth: 480, margin: '40px auto', padding: 24, background: 'white', borderRadius: 24, boxShadow: '0 10px 30px rgba(0,0,0,0.08)', textAlign: 'center' }}>
+            <h1 style={{ fontSize: '1.6em', fontWeight: 700, marginBottom: 18 }}>
+              {window.GAME_CONFIG?.title || '학습 게임'}
+            </h1>
+            <input
+              value={player}
+              onChange={(e) => setPlayer(e.target.value)}
+              placeholder="이름"
+              style={{ width: '100%', padding: '14px 16px', border: '2px solid #e5e7eb', borderRadius: 12, fontSize: '1.05em', marginBottom: 14, outline: 'none' }}
+            />
+            <button
+              disabled={!player.trim()}
+              onClick={onStart}
+              style={{ width: '100%', padding: '14px 20px', background: '#6366f1', color: 'white', border: 'none', borderRadius: 12, fontSize: '1.1em', fontWeight: 700, cursor: player.trim() ? 'pointer' : 'not-allowed', opacity: player.trim() ? 1 : 0.5 }}
+            >
+              시작하기 🎮
+            </button>
+          </div>
+        );
+      }
+
+      return children({ player, submit });
+    }
+
+    // ─────────────────────────────────────────
+    // App — 여기 GameBody만 바꾸면 됩니다.
+    //   - GameBody는 props로 { player, submit } 받음
+    //   - 게임 종료 시 submit({ score, total, answers, meta }) 호출
+    // ─────────────────────────────────────────
+    function App() {
+      return <GameShell>{({ player, submit }) => <GameBody player={player} submit={submit} />}</GameShell>;
+    }
+
+    // ───── 창세기 8장면 순서 게임 (창조 → 요셉) ─────
+    // 파이디온 예수빌리지 구약1 진도 매핑 + 성경 2.0 1권 만화 페이지
+
+    const ANSWER = [
+      { id: 1, ko: "채색옷",      en: "Coat",       img: "./assets/images/01_paidion.jpg",   subtitle: "아버지의 사랑",     paidion: "창세기 37장",
+        description: "야곱이 요셉을 가장 사랑했어요. 화려한 채색옷을 만들어 주었어요. 형들이 시기했어요." },
+      { id: 2, ko: "구덩이",     en: "Pit",        img: "./assets/images/02_paidion.jpg",   subtitle: "이집트로 팔림",    paidion: "창세기 37장",
+        description: "형들이 요셉을 미워해서 구덩이에 던졌어요. 지나가는 상인들에게 팔았어요. 요셉은 이집트로 끌려갔어요." },
+      { id: 3, ko: "보디발 집",  en: "Potiphar",   img: "./assets/images/03_paidion.jpg",   subtitle: "이집트에서",       paidion: "창세기 39장",
+        description: "요셉이 이집트의 보디발 집에서 일했어요. 모든 일이 잘 되었어요. 보디발이 요셉을 신뢰했어요." },
+      { id: 4, ko: "감옥",       en: "Prison",     img: "./assets/images/04_paidion.jpg",   subtitle: "두 신하의 꿈",     paidion: "창세기 40장",
+        description: "요셉이 억울하게 감옥에 갔어요. 두 신하의 꿈을 풀어주었어요. 한 명이 감옥에서 풀려나왔어요." },
+      { id: 5, ko: "바로의 꿈",  en: "Pharaoh",    img: "./assets/images/05_paidion.jpg",   subtitle: "풍년과 흉년",      paidion: "창세기 41장",
+        description: "이집트 왕 바로가 이상한 꿈을 꿨어요. 요셉이 꿈을 풀어주었어요. 칠 년 풍년 후 칠 년 흉년이 온대요." },
+      { id: 6, ko: "총리 임명",  en: "Minister",   img: "./assets/images/06_paidion.jpg",   subtitle: "이집트 다스림",    paidion: "창세기 41장",
+        description: "바로가 요셉에게 인장 반지를 주었어요. 이집트 모든 땅을 다스리게 했어요. 요셉이 이집트 총리가 되었어요." },
+      { id: 7, ko: "형제 재회",  en: "Reunion",    img: "./assets/images/07_paidion.jpg",   subtitle: "내가 요셉이오",    paidion: "창세기 45장",
+        description: "흉년에 형들이 곡식 사러 이집트에 왔어요. 요셉이 자기를 밝혔어요. 형들과 부둥켜 안고 울었어요." },
+      { id: 8, ko: "애굽 정착",  en: "Settle",     img: "./assets/images/08_paidion.jpg",   subtitle: "고센 땅",          paidion: "창세기 46-47장",
+        description: "야곱과 가족 칠십 명이 모두 이집트로 내려왔어요. 좋은 땅 고센에 살게 되었어요. 흉년 동안 요셉이 가족을 돌봤어요." },
+    ];
+
+    function shuffleArr(arr) {
+      const a = [...arr];
+      for (let i = a.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [a[i], a[j]] = [a[j], a[i]];
+      }
+      // 완전히 정답과 같으면 다시 섞음 (아주 희귀)
+      if (a.every((x, i) => x.id === ANSWER[i].id)) return shuffleArr(arr);
+      return a;
+    }
+
+    function GameBody({ player, submit }) {
+      const isMobile = useIsMobile();
+      const [phase, setPhase] = useState('intro');   // 'intro' | 'play' | 'result'
+      // order = 슬롯 8개 (각 슬롯이 카드 또는 null). poolOrder = 정리 안 된 카드들의 표시 순서
+      const [order, setOrder] = useState(() => Array(ANSWER.length).fill(null));
+      const [poolOrder, setPoolOrder] = useState(() => shuffleArr(ANSWER));
+      const [checked, setChecked] = useState(false);
+      const [hintsUsed, setHintsUsed] = useState(0);
+      const [intro, setIntro] = useState({ i: -1, playing: false }); // 학습 모드
+      const poolRef = useRef(null);
+      const slotRefs = useRef(Array.from({ length: ANSWER.length }, () => null));
+      const sortablesRef = useRef([]);
+
+      // 두 영역 SortableJS — pool ↔ slots, 슬롯은 1장만.
+      // 패턴: SortableJS DOM 변경 즉시 원복 → evt 정보로 React state만 업데이트.
+      // → React가 새 state 기준으로 카드를 올바른 위치에 그림 (SortableJS DOM ↔ React 가상DOM 충돌 회피)
+      const stateRef = useRef({ order, poolOrder });
+      stateRef.current = { order, poolOrder };
+
+      useEffect(() => {
+        if (phase !== 'play' || checked) {
+          sortablesRef.current.forEach(s => s && s.destroy());
+          sortablesRef.current = [];
+          return;
+        }
+        if (!window.Sortable) return;
+
+        const handleEnd = (evt) => {
+          // 1) SortableJS의 DOM 변경 즉시 원복 — 카드 DOM 노드 그대로 두고 React state만 변경
+          try {
+            const refNode = evt.from.children[evt.oldIndex] || null;
+            evt.from.insertBefore(evt.item, refNode);
+          } catch (e) {}
+
+          const cardId = Number(evt.item.dataset.id);
+          const card = ANSWER.find(a => a.id === cardId);
+          if (!card) return;
+
+          const fromIsPool = evt.from === poolRef.current;
+          const toIsPool = evt.to === poolRef.current;
+          const fromSlotIdx = fromIsPool ? -1 : slotRefs.current.indexOf(evt.from);
+          const toSlotIdx = toIsPool ? -1 : slotRefs.current.indexOf(evt.to);
+
+          const cur = stateRef.current;
+          const newOrder = [...cur.order];
+          const newPool = [...cur.poolOrder];
+
+          // pool 내 순서 변경
+          if (fromIsPool && toIsPool) {
+            const oldIdx = newPool.findIndex(c => c.id === cardId);
+            if (oldIdx < 0) return;
+            newPool.splice(oldIdx, 1);
+            const insertAt = Math.min(evt.newIndex, newPool.length);
+            newPool.splice(insertAt, 0, card);
+            setPoolOrder(newPool);
+            sfx.click();
+            return;
+          }
+
+          // 출발지 제거
+          if (fromIsPool) {
+            const idx = newPool.findIndex(c => c.id === cardId);
+            if (idx >= 0) newPool.splice(idx, 1);
+          } else if (fromSlotIdx >= 0) {
+            newOrder[fromSlotIdx] = null;
+          }
+
+          // 도착지 배치
+          if (toIsPool) {
+            newPool.push(card);
+          } else if (toSlotIdx >= 0) {
+            const evicted = newOrder[toSlotIdx];
+            if (evicted && evicted.id !== card.id) newPool.push(evicted);
+            newOrder[toSlotIdx] = card;
+          }
+
+          setOrder(newOrder);
+          setPoolOrder(newPool);
+          sfx.click();
+        };
+
+        const sortables = [];
+        if (poolRef.current) {
+          sortables.push(window.Sortable.create(poolRef.current, {
+            group: 'g8-cards',
+            animation: 200,
+            delay: 100,
+            delayOnTouchOnly: true,
+            ghostClass: 'son-ghost',
+            chosenClass: 'son-chosen',
+            scroll: true,             // 드래그 중 페이지 자동 스크롤
+            scrollSensitivity: 80,    // viewport 가장자리 80px 안에서 auto-scroll
+            scrollSpeed: 14,          // 모바일에서 충분히 빠르게
+            bubbleScroll: true,       // 부모 스크롤 컨테이너까지 전파
+            onChoose: () => sfx.tap(),
+            onEnd: handleEnd,
+          }));
+        }
+        slotRefs.current.forEach((el) => {
+          if (!el) return;
+          sortables.push(window.Sortable.create(el, {
+            group: {
+              name: 'g8-cards',
+              put: (to) => to.el.children.length === 0,
+            },
+            animation: 200,
+            delay: 100,
+            delayOnTouchOnly: true,
+            ghostClass: 'son-ghost',
+            chosenClass: 'son-chosen',
+            scroll: true,             // 드래그 중 페이지 자동 스크롤
+            scrollSensitivity: 80,    // viewport 가장자리 80px 안에서 auto-scroll
+            scrollSpeed: 14,          // 모바일에서 충분히 빠르게
+            bubbleScroll: true,       // 부모 스크롤 컨테이너까지 전파
+            onChoose: () => sfx.tap(),
+            onEnd: handleEnd,
+          }));
+        });
+        sortablesRef.current = sortables;
+        return () => {
+          sortables.forEach(s => s.destroy());
+          sortablesRef.current = [];
+        };
+      }, [phase, checked]);
+
+      // 학습 모드: 1~8 순서대로 읽기 (이름 + subtitle)
+      function startIntro() {
+        sfx.click();
+        setIntro({ i: 0, playing: true });
+      }
+      useEffect(() => {
+        if (!intro.playing) return;
+        const i = intro.i;
+        if (i >= ANSWER.length) { setIntro({ i: -1, playing: false }); return; }
+        const item = ANSWER[i];
+        try { window.speechSynthesis.cancel(); } catch (e) {}
+
+        // "N번, 이름" → "subtitle" 순차 (모두 한국어), onend 이후 다음 카드
+        let advanced = false;
+        const advance = () => {
+          if (advanced) return;
+          advanced = true;
+          setIntro((prev) => (prev.playing && prev.i === i ? { i: i + 1, playing: true } : prev));
+        };
+
+        const utterName = new SpeechSynthesisUtterance(`${i + 1}번, ${item.ko}`);
+        utterName.lang = 'ko-KR';
+        utterName.rate = 0.95;
+
+        const utterDesc = new SpeechSynthesisUtterance(item.description || item.subtitle);
+        utterDesc.lang = 'ko-KR';
+        utterDesc.rate = 0.92;  // 설명은 천천히 (유아 이해)
+
+        try {
+          const koVoice = window.GameTTS && window.GameTTS.pickVoice('ko-KR');
+          if (koVoice) { utterName.voice = koVoice; utterDesc.voice = koVoice; }
+        } catch (e) {}
+
+        utterDesc.onend = () => setTimeout(advance, 800);
+        utterDesc.onerror = () => setTimeout(advance, 800);
+
+        window.speechSynthesis.speak(utterName);
+        window.speechSynthesis.speak(utterDesc);
+
+        // 안전장치: 14초 내 onend 안 오면 강제 다음 (설명 3줄 읽기 충분 대기)
+        const fallback = setTimeout(advance, 14000);
+        return () => clearTimeout(fallback);
+      }, [intro]);
+
+      function stopIntro() {
+        try { window.speechSynthesis.cancel(); } catch (e) {}
+        setIntro({ i: -1, playing: false });
+      }
+
+      function reshuffle() {
+        sfx.click();
+        setOrder(Array(ANSWER.length).fill(null));
+        setPoolOrder(shuffleArr(ANSWER));
+        setChecked(false);
+      }
+
+      // 슬롯의 카드를 풀로 돌려보내기
+      function returnCardToPool(slotIdx) {
+        if (checked) return;
+        const card = order[slotIdx];
+        if (!card) return;
+        sfx.tap();
+        const newOrder = [...order];
+        newOrder[slotIdx] = null;
+        setOrder(newOrder);
+        setPoolOrder([...poolOrder, card]);
+      }
+
+      function useHint() {
+        if (checked) return;
+        sfx.click();
+        // 빈 슬롯 또는 틀린 슬롯 중 무작위 선택
+        const wrongOrEmpty = order
+          .map((it, i) => (!it || it.id !== ANSWER[i].id) ? i : -1)
+          .filter(i => i >= 0);
+        if (!wrongOrEmpty.length) return;
+        const targetPos = wrongOrEmpty[Math.floor(Math.random() * wrongOrEmpty.length)];
+        const correctCard = ANSWER[targetPos];
+        const evicted = order[targetPos]; // 슬롯에 이미 있던 카드 (있다면 pool로)
+        const inPoolIdx = poolOrder.findIndex(c => c.id === correctCard.id);
+        const inSlotIdx = order.findIndex((c, i) => c && c.id === correctCard.id && i !== targetPos);
+        const newOrder = [...order];
+        const newPool = [...poolOrder];
+        if (inPoolIdx >= 0) {
+          newPool.splice(inPoolIdx, 1);
+          if (evicted) newPool.push(evicted);
+        } else if (inSlotIdx >= 0) {
+          newOrder[inSlotIdx] = evicted; // swap
+        }
+        newOrder[targetPos] = correctCard;
+        setOrder(newOrder);
+        setPoolOrder(newPool);
+        setHintsUsed(h => h + 1);
+      }
+
+      function checkAnswers() {
+        sfx.click();
+        setChecked(true);
+        const correctCount = order.filter((it, i) => it && it.id === ANSWER[i].id).length;
+        setTimeout(() => {
+          if (correctCount === 8) sfx.correct();
+          else if (correctCount >= 5) sfx.partial();
+          else sfx.wrong();
+        }, 60);
+      }
+
+      function finish() {
+        sfx.finish();
+        const score = order.filter((it, i) => it && it.id === ANSWER[i].id).length;
+        submit({
+          score, total: 8,
+          answers: order.map((it, i) => ({
+            position: i + 1,
+            expected: ANSWER[i].ko,
+            chosen: it ? it.ko : '비어있음',
+            ok: it ? it.id === ANSWER[i].id : false,
+          })),
+          meta: { hints_used: hintsUsed },
+        });
+        setPhase('result');
+      }
+
+      function playAgain() {
+        sfx.click();
+        setOrder(Array(ANSWER.length).fill(null));
+        setPoolOrder(shuffleArr(ANSWER));
+        setChecked(false);
+        setHintsUsed(0);
+        setPhase('play');
+      }
+
+      const correctCount = order.filter((it, i) => it && it.id === ANSWER[i].id).length;
+      const allFilled = order.every(Boolean);
+
+      // ─── 인트로(시작 안내) ───
+      if (phase === 'intro') {
+        return (
+          <div style={{ maxWidth: 720, margin: '20px auto', padding: isMobile ? 18 : 28, background: 'white', borderRadius: 20, boxShadow: '0 10px 30px rgba(0,0,0,0.08)' }}>
+            <h2 style={{ fontSize: isMobile ? '1.3em' : '1.6em', fontWeight: 800, marginBottom: 12 }}>
+              👑 요셉 8장면 (파이디온판)을 순서대로 놓아봐요, {player}!
+            </h2>
+            <p style={{ color: '#475569', marginBottom: 18, lineHeight: 1.6 }}>
+              파이디온 구약1 17과 보조용. 아래 <b>"이야기 듣기"</b> 로 채색옷부터 애굽 정착까지 들어본 뒤,<br />
+              <b>"도전 시작"</b> 을 누르면 카드가 섞입니다. 순서에 맞게 <b>드래그</b>로 옮겨주세요!
+            </p>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 18 }}>
+              {ANSWER.map((s, i) => (
+                <div key={s.id} style={{
+                  background: intro.i === i ? '#fef3c7' : '#f8fafc',
+                  border: '2px solid ' + (intro.i === i ? '#f59e0b' : '#e5e7eb'),
+                  borderRadius: 14, padding: isMobile ? 8 : 10,
+                  transform: intro.i === i ? 'scale(1.02)' : 'scale(1)',
+                  transition: 'all 0.2s', cursor: 'pointer',
+                  display: 'flex', alignItems: 'center', gap: isMobile ? 10 : 14,
+                }}
+                onClick={() => { sfx.tap(); try { window.speechSynthesis.cancel(); } catch(e){}; window.GameTTS.speakQueue([{ text: s.ko, lang: 'ko-KR' }, { text: s.description || s.subtitle, lang: 'ko-KR' }]); }}>
+                  <div style={{ fontSize: isMobile ? '1em' : '1.3em', color: '#64748b', fontWeight: 800, minWidth: isMobile ? 32 : 44, textAlign: 'center' }}>{i + 1}번</div>
+                  <img src={s.img} alt={s.ko} draggable={false} style={{
+                    width: isMobile ? 200 : 384, height: isMobile ? 200 : 384,
+                    aspectRatio: '1/1', objectFit: 'contain', background: '#fff',
+                    borderRadius: 10, pointerEvents: 'none', flexShrink: 0,
+                  }} />
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontWeight: 900, fontSize: isMobile ? '1.5em' : '1.9em', color: '#1f2937', lineHeight: 1.1 }}>{s.ko}</div>
+                    <div style={{ fontSize: isMobile ? '0.95em' : '1.1em', color: '#6b7280', marginTop: 6, lineHeight: 1.4 }}>{s.subtitle}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', justifyContent: 'center' }}>
+              {!intro.playing ? (
+                <button onClick={startIntro} style={btn('#6366f1')}>🎧 이야기 듣기 (1→8 순서)</button>
+              ) : (
+                <button onClick={stopIntro} style={btn('#ef4444')}>⏸ 멈추기</button>
+              )}
+              <button onClick={() => { sfx.click(); setPhase('play'); }} style={btn('#10b981')}>🎮 도전 시작</button>
+            </div>
+          </div>
+        );
+      }
+
+      // ─── 결과 ───
+      if (phase === 'result') {
+        return (
+          <div style={{ maxWidth: 520, margin: '60px auto', padding: 32, background: 'white', borderRadius: 24, textAlign: 'center', boxShadow: '0 20px 60px rgba(0,0,0,0.12)' }}>
+            <div style={{ fontSize: '4em', marginBottom: 10 }}>🏆</div>
+            <h2 style={{ fontSize: '2em', fontWeight: 800, marginBottom: 14 }}>참 잘했어요!</h2>
+            <p style={{ color: '#64748b', marginBottom: 10 }}>{player} 님</p>
+            <div style={{ fontSize: '3.2em', fontWeight: 900, color: '#6366f1' }}>{correctCount}/8</div>
+            <p style={{ color: '#6b7280', marginTop: 10 }}>힌트 {hintsUsed}회 사용</p>
+            <button onClick={playAgain} style={{ ...btn('#6366f1'), width: '100%', marginTop: 24 }}>
+              다시 도전하기 🔁
+            </button>
+          </div>
+        );
+      }
+
+      // ─── 플레이 화면: 좌(카드 풀) + 우(슬롯 1~8 세로 + ↓ 화살표) ───
+      const tapToSpeak = (card) => {
+        sfx.tap();
+        try { window.speechSynthesis.cancel(); } catch(e){}
+        // 이름(또렷이) → 3줄 설명(천천히, 학습용)
+        window.GameTTS.speakQueue([
+          { text: card.ko, lang: 'ko-KR' },
+          { text: card.description || card.subtitle, lang: 'ko-KR' },
+        ]);
+      };
+      return (
+        <div style={{ maxWidth: 1100, margin: '12px auto', padding: isMobile ? 8 : 20 }}>
+          <style>{`
+            .son-ghost { opacity: 0.35; }
+            .son-chosen { transform: scale(1.06); box-shadow: 0 12px 28px rgba(99,102,241,0.35); }
+          `}</style>
+
+          {/* 헤더 */}
+          <div style={{ background: 'white', borderRadius: 18, padding: isMobile ? 12 : 18, boxShadow: '0 6px 18px rgba(0,0,0,0.06)', marginBottom: 12 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+              <h3 style={{ fontWeight: 800, fontSize: isMobile ? '0.95em' : '1.2em' }}>
+                🙋 {player} · 카드를 빈칸에 순서대로 옮겨요!
+              </h3>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                <button onClick={reshuffle} style={smallBtn('#94a3b8')}>🔀 섞기</button>
+                <button onClick={useHint} style={smallBtn('#f59e0b')}>💡 힌트 ({hintsUsed})</button>
+              </div>
+            </div>
+            {checked && (
+              <div style={{
+                marginTop: 10, padding: 10, borderRadius: 12,
+                background: correctCount === 8 ? '#d1fae5' : correctCount >= 5 ? '#fef3c7' : '#fee2e2',
+                color: '#1f2937', fontWeight: 700, fontSize: isMobile ? '0.92em' : '1em',
+              }}>
+                {correctCount === 8 ? '🎉 완벽해요! 8장면 모두 맞았어요!' : `✏️ ${correctCount}/8 맞음 — 빨간 자리를 고쳐보세요`}
+              </div>
+            )}
+          </div>
+
+          {/* 좌·우 분할 */}
+          <div style={{
+            display: 'grid',
+            gridTemplateColumns: isMobile ? '1.05fr 0.95fr' : '1.15fr 1fr',
+            gap: isMobile ? 8 : 14,
+            touchAction: 'none',
+          }}>
+            {/* 좌측: 정리 안 된 카드 — 세로 1열 큰 카드 (이미지 + 이름) */}
+            <div style={{ background: '#eef2ff', borderRadius: 16, padding: isMobile ? 6 : 10 }}>
+              <div style={{ fontSize: isMobile ? '0.78em' : '0.9em', fontWeight: 800, color: '#475569', textAlign: 'center', marginBottom: 6 }}>
+                정리 안 된 카드
+              </div>
+              <div ref={poolRef} style={{
+                display: 'flex', flexDirection: 'column',
+                gap: isMobile ? 5 : 8,
+                minHeight: 220,
+              }}>
+                {poolOrder.map(card => (
+                  <div key={card.id} data-id={card.id}
+                    onClick={() => !checked && tapToSpeak(card)}
+                    style={{
+                      background: 'white', borderRadius: 12, padding: isMobile ? 6 : 8,
+                      cursor: checked ? 'default' : 'grab', userSelect: 'none',
+                      boxShadow: '0 2px 6px rgba(0,0,0,0.06)',
+                      display: 'flex', alignItems: 'center', gap: isMobile ? 10 : 14,
+                    }}>
+                    <img src={card.img} alt={card.ko} draggable={false} style={{
+                      width: isMobile ? 200 : 384, height: isMobile ? 200 : 384,
+                      aspectRatio: '1/1', objectFit: 'contain', background: '#fff',
+                      borderRadius: 10, pointerEvents: 'none', flexShrink: 0,
+                    }} />
+                    <div style={{ fontSize: isMobile ? '1.2em' : '1.9em', fontWeight: 900, color: '#1f2937', lineHeight: 1.15 }}>
+                      {card.ko}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* 우측: 슬롯 1~8 세로 + ↓ 화살표 */}
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'stretch', gap: 0 }}>
+              {ANSWER.map((_, i) => {
+                const card = order[i];
+                const isOk = checked && card && card.id === ANSWER[i].id;
+                const isWrong = checked && card && card.id !== ANSWER[i].id;
+                return (
+                  <React.Fragment key={i}>
+                    <div style={{
+                      background: isOk ? '#d1fae5' : isWrong ? '#fee2e2' : '#fff',
+                      border: '3px solid ' + (isOk ? '#10b981' : isWrong ? '#ef4444' : '#cbd5e1'),
+                      borderRadius: 14,
+                      padding: isMobile ? 6 : 8,
+                      display: 'flex', alignItems: 'center', gap: isMobile ? 10 : 14,
+                      minHeight: isMobile ? 220 : 400,
+                    }}>
+                      <div style={{
+                        fontSize: isMobile ? '1.5em' : '2em', fontWeight: 900,
+                        color: isOk ? '#065f46' : isWrong ? '#991b1b' : '#64748b',
+                        minWidth: isMobile ? 32 : 44, textAlign: 'center',
+                      }}>{i + 1}</div>
+                      <div ref={el => slotRefs.current[i] = el} style={{
+                        flex: 1,
+                        minHeight: isMobile ? 208 : 388,
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        border: card ? 'none' : '2px dashed #cbd5e1',
+                        borderRadius: 10,
+                        background: card ? 'transparent' : 'rgba(255,255,255,0.55)',
+                      }}>
+                        {card && (
+                          <div data-id={card.id}
+                            onClick={() => !checked && tapToSpeak(card)}
+                            style={{
+                              width: '100%', cursor: checked ? 'default' : 'grab', userSelect: 'none',
+                              display: 'flex', alignItems: 'center', gap: isMobile ? 10 : 14,
+                              padding: '2px 4px',
+                              position: 'relative',
+                            }}>
+                            <img src={card.img} alt={card.ko} draggable={false} style={{
+                              width: isMobile ? 200 : 384, height: isMobile ? 200 : 384,
+                              aspectRatio: '1/1', objectFit: 'contain', background: '#fff',
+                              borderRadius: 10, pointerEvents: 'none', flexShrink: 0,
+                            }} />
+                            <div style={{ fontWeight: 900, fontSize: isMobile ? '1.2em' : '1.9em', color: '#1f2937' }}>
+                              {card.ko}
+                            </div>
+                            {!checked && (
+                              <button
+                                onClick={(e) => { e.stopPropagation(); returnCardToPool(i); }}
+                                onPointerDown={(e) => e.stopPropagation()}
+                                onMouseDown={(e) => e.stopPropagation()}
+                                onTouchStart={(e) => e.stopPropagation()}
+                                style={{
+                                  position: 'absolute', top: 4, right: 4,
+                                  width: isMobile ? 32 : 40, height: isMobile ? 32 : 40,
+                                  borderRadius: '50%',
+                                  background: '#ef4444', color: 'white', border: 'none',
+                                  fontSize: isMobile ? '1em' : '1.2em', fontWeight: 900,
+                                  cursor: 'pointer', boxShadow: '0 2px 6px rgba(0,0,0,0.2)',
+                                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                  zIndex: 5,
+                                }}
+                                aria-label="카드 빼기"
+                                title="왼쪽으로 빼기"
+                              >↩</button>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                    {i < ANSWER.length - 1 && (
+                      <div style={{ fontSize: isMobile ? '1.1em' : '1.4em', color: '#94a3b8', textAlign: 'center', padding: '1px 0' }}>↓</div>
+                    )}
+                  </React.Fragment>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* 하단 버튼 */}
+          <div style={{ display: 'flex', gap: 10, justifyContent: 'center', flexWrap: 'wrap', marginTop: 16 }}>
+            {!checked ? (
+              <button onClick={checkAnswers} style={btn(allFilled ? '#6366f1' : '#94a3b8')}>
+                {allFilled ? '✅ 정답 확인' : `🪧 ${order.filter(Boolean).length}/8 — 카드를 더 옮겨요`}
+              </button>
+            ) : correctCount === 8 ? (
+              <button onClick={finish} style={btn('#10b981')}>🎉 완료하고 기록하기</button>
+            ) : (
+              <>
+                <button onClick={() => { sfx.click(); setChecked(false); }} style={btn('#f59e0b')}>✏️ 다시 고치기</button>
+                <button onClick={finish} style={btn('#6b7280')}>여기서 끝내기</button>
+              </>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    function btn(color) {
+      return {
+        padding: '14px 22px', fontSize: '1.05em', fontWeight: 800, color: 'white',
+        background: color, border: 'none', borderRadius: 14, cursor: 'pointer',
+        boxShadow: '0 6px 14px rgba(0,0,0,0.12)', minHeight: 54,
+      };
+    }
+    function smallBtn(color) {
+      return {
+        padding: '8px 14px', fontSize: '0.92em', fontWeight: 700, color: 'white',
+        background: color, border: 'none', borderRadius: 22, cursor: 'pointer',
+      };
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>
